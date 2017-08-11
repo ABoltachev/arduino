@@ -1,0 +1,339 @@
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <resolv.h>
+#include <errno.h>
+#include <strings.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
+#define MAX_CLIENTS 500
+#define BUFFER 1024
+
+int max(int a, int b)
+{
+    return a > b ? a : b;
+}
+
+int max_value(int arr[])
+{
+    int i = 0;
+    int max = 0;
+    for (; i < MAX_CLIENTS; i++)
+    {
+        if (arr[i] == -1)
+            break;
+        if (max < arr[i])
+        {
+            max = arr[i];
+        }
+    }
+    return max;
+}
+
+void errase(int arr[], int ind)
+{
+    int i = ind;
+    for (; i < MAX_CLIENTS; i++)
+    {
+        arr[ind] = arr[ind + 1];
+        if (arr[ind] == -1)
+            break;
+    }
+}
+
+int main(int argc, char *argv[])
+{
+    char protoc = 't';
+    int port;
+    switch (argc)
+    {
+        case 1:
+            port = 50000;
+            break;
+
+        case 2:
+            if (argv[1][0] == '-')
+            {
+                protoc = argv[1][1];
+                port = 50000;
+            }
+            else
+            {
+                port = atoi(argv[1]);
+                if (port < 50000 || port > 55000)
+                {
+                    printf("Incorrect port\n");
+                    port = 50000;
+                }
+            }
+            break;
+
+        default:
+            protoc = argv[1][1];
+            port = atoi(argv[2]);
+            if (port < 50000 || port > 55000)
+            {
+                port = 50000;
+            }
+    }
+
+    int sd;
+    int clients[MAX_CLIENTS + 1];
+    char buff[BUFFER];
+    int bytes_read;
+
+    sd = socket(PF_INET, protoc == 'u' ? SOCK_DGRAM : SOCK_STREAM, 0);
+    //fcntl(sd, F_SETFL, O_NONBLOCK, 0);
+    struct sockaddr_in addr;
+    bzero(&addr, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    int done = 0;
+    do
+    {
+        addr.sin_port = htons(port);
+        if (bind(sd, (struct sockaddr*)&addr, sizeof(addr)) != 0)
+        {
+            if (errno != EADDRINUSE)
+                perror("Bind AF_INET");            
+        }
+        else
+        {
+            done = 1;
+            printf("[Run!]\tProtocol:%s, ip:%s, port:%d\n", protoc == 'u' ? "UDP" : "TCP", inet_ntoa(addr.sin_addr), port);
+        }
+        port = port < 55000 ? port + 1 : 50000;
+    } while (!done);
+    if (protoc == 'u')
+    {
+        while (1)
+        {
+            char buffer[1024];
+	    int size = sizeof(addr);
+            int amount = recvfrom(sd, buffer, sizeof(buffer), 0, (struct sockaddr *)&addr, &size);
+            if (amount > 0)
+            {
+                amount = sendto(sd, buffer, sizeof(buffer), 0, (struct sockaddr *)&addr, size);
+            }
+        }
+    }
+    else
+    {
+        if (listen(sd, 20) != 0)
+        {
+            perror("Listen");
+        }
+        clients[0] = -1;
+        int cur_ind = 0;
+        while (1)
+        {
+            int i = 0;
+            int clientsd;
+            fd_set readset;
+            FD_ZERO(&readset);
+            FD_SET(sd, &readset);
+
+            for (; i < MAX_CLIENTS; i++)
+            {
+                if (clients[i] == -1)
+                    break;
+                FD_SET(clients[i], &readset);
+            }
+
+            struct timeval timeout;
+            timeout.tv_sec = 15;
+            timeout.tv_usec = 0;
+
+            int mx = max(sd, max_value(clients));
+            if (select(mx + 1, &readset, NULL, NULL, &timeout) <= 0)
+            {
+                if (errno != 0)
+                    perror("select");
+            }
+
+            if (FD_ISSET(sd, &readset))
+            {
+                clientsd = accept(sd, NULL, NULL);
+                if (clientsd < 0)
+                {
+                    perror("accept");
+                }
+                else
+                {
+                    fcntl(clientsd, F_SETFL, O_NONBLOCK);
+                    if (cur_ind < MAX_CLIENTS)
+                    {
+                        clients[cur_ind++] = clientsd;
+                        clients[cur_ind] = -1;
+                    }
+                }
+            }
+            i = 0;
+            for (; i < MAX_CLIENTS; i++)
+            {
+                if (clients[i] == -1)
+                    break;
+                if (FD_ISSET(clients[i], &readset))
+                {
+                
+                    bytes_read = recv(clients[i], buff, BUFFER, 0);
+                    if (bytes_read <= 0)
+                    {
+                        close(clients[i]);
+                        errase(clients, i);
+                        cur_ind--;
+                    }
+                    else
+                    {
+                        send(clients[i], buff, bytes_read, 0);
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+
+
+
+
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <resolv.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <stdlib.h>
+
+#define DEFAULT_PORT 50000
+#define DEFAULT_IP htonl(INADDR_LOOPBACK)
+#define DEFAULT_PROTOC 'T'
+
+char protoc;
+unsigned short port;
+struct in_addr ip;
+
+unsigned short chek_port(unsigned short _port)
+{
+    if (_port == 0)
+    {
+        return DEFAULT_PORT;
+    }
+    return _port;
+}
+
+char chek_protoc(const char *_protoc)
+{
+    if (_protoc[0] != '-' || strlen(_protoc) != 2)
+    {
+        return '!';
+    }
+    else switch (_protoc[1])
+    {
+        case 'T':
+        case 't':
+            return 'T';
+
+        case 'U':
+        case 'u':
+            return 'U';
+
+        default:
+            return '!';
+    }
+}
+
+int connection()
+{
+    int sd;
+    struct sockaddr_in addr;
+
+    sd = socket(PF_INET, protoc == 'T' ? SOCK_STREAM : SOCK_DGRAM, 0);
+    if (sd < 0)
+    {
+        perror("[Socket]");
+        exit(1);
+    }
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr = ip;
+    if (connect(sd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    {
+        perror("[Connect]");
+        exit(2);
+    }
+    return sd;
+}
+
+int main(int argc, char *argv[])
+{
+    switch (argc)
+    {
+        case 1:
+            port = DEFAULT_PORT;
+            protoc = DEFAULT_PROTOC;
+            ip.s_addr = DEFAULT_IP;
+            break;
+
+        case 2:
+            port = DEFAULT_PORT;
+            protoc = DEFAULT_PROTOC;
+            ip.s_addr = inet_aton(argv[1], &ip) != 0 ? ip.s_addr : DEFAULT_IP;
+            break;
+
+        case 3:
+            if ((protoc = chek_protoc(argv[1])) != '!')
+            {
+                port = DEFAULT_PORT;
+                ip.s_addr = inet_aton(argv[2], &ip) != 0 ? ip.s_addr : DEFAULT_IP;
+            }
+            else
+            {
+                ip.s_addr = inet_aton(argv[1], &ip) != 0 ? ip.s_addr : DEFAULT_IP;
+                port = chek_port(atoi(argv[2]));
+                protoc = DEFAULT_PROTOC;
+            }
+            break;
+
+        default:
+            if ((protoc = chek_protoc(argv[1])) == '!')
+            {
+                protoc = DEFAULT_PROTOC;
+            }
+            ip.s_addr = inet_aton(argv[2], &ip) != 0 ? ip.s_addr : DEFAULT_IP;
+            port = chek_port(atoi(argv[3]));
+    }
+    printf("Protocol: %s, ip: %s, port: %d\n[Connection...]\n", (protoc == 'T' ? "TCP" : "UDP"), inet_ntoa(ip), port);
+    int sd = connection();
+    printf("[Done!]\n");
+    char buffer[1024];
+    int exit = 0;
+    do {
+    	scanf("%s", buffer);
+        if (!strncmp("close", buffer, 5))
+            break;
+        int cod = send(sd, buffer, sizeof(buffer), 0);
+        if (cod <= 0)
+        {
+            printf("1\n");
+            break;
+        }
+        buffer[0] = '\0';
+        cod = recv(sd, buffer, sizeof(buffer), 0);
+        if (cod <= 0)
+        {
+            printf("2\n");
+            break;
+        }
+        printf("%s\n", buffer);
+    } while (!exit);
+    close(sd);
+    return 0;
+}
